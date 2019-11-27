@@ -3,46 +3,44 @@ defmodule Ueberauth.Strategy.Discord do
   Discord Strategy for Überauth.
   """
 
-  use Ueberauth.Strategy, uid_field: :id, default_scope: "identify"
+  use Ueberauth.Strategy, uid_field: :id,
+                          default_scope: "identify",
+                          oauth2_module: Ueberauth.Strategy.Discord.OAuth
 
   alias Ueberauth.Auth.Info
   alias Ueberauth.Auth.Credentials
   alias Ueberauth.Auth.Extra
-
   @doc """
   Handles initial request for Discord authentication.
   """
   def handle_request!(conn) do
     scopes = conn.params["scope"] || option(conn, :default_scope)
-    prompt = conn.params["prompt"] || option(conn, :prompt)
-    opts = [scope: scopes, prompt: prompt]
+    send_redirect_uri = Keyword.get(options(conn), :send_redirect_uri, true)
 
     opts =
-      if conn.params["state"] do
-        Keyword.put(opts, :state, conn.params["state"])
+      if send_redirect_uri do
+        [redirect_uri: callback_url(conn), scope: scopes]
       else
-        opts
+        [scope: scopes]
       end
 
-    opts = Keyword.put(opts, :redirect_uri, callback_url(conn))
+    opts =
+      if conn.params["state"], do: Keyword.put(opts, :state, conn.params["state"]), else: opts
 
-    redirect!(conn, Ueberauth.Strategy.Discord.OAuth.authorize_url!(opts))
+    module = option(conn, :oauth2_module)
+    redirect!(conn, apply(module, :authorize_url!, [opts]))
   end
 
   @doc false
   def handle_callback!(%Plug.Conn{params: %{"code" => code}} = conn) do
-    opts = [redirect_uri: callback_url(conn)]
-    token = Ueberauth.Strategy.Discord.OAuth.get_token!([code: code], opts)
+    module = option(conn, :oauth2_module)
+    token = apply(module, :get_token!, [[code: code]])
 
     if token.access_token == nil do
-      err = token.other_params["error"]
-      desc = token.other_params["error_description"]
-      set_errors!(conn, [error(err, desc)])
+      set_errors!(conn, [error(token.other_params["error"], token.other_params["error_description"])])
     else
       conn
-      |> store_token(token)
       |> fetch_user(token)
-      |> fetch_connections(token)
       |> fetch_guilds(token)
     end
   end
@@ -57,17 +55,11 @@ defmodule Ueberauth.Strategy.Discord do
     conn
     |> put_private(:discord_token, nil)
     |> put_private(:discord_user, nil)
-    |> put_private(:discord_connections, nil)
-    |> put_private(:discord_guilds, nil)
-  end
-
-  # Store the token for later use.
-  @doc false
-  defp store_token(conn, token) do
-    put_private(conn, :discord_token, token)
   end
 
   defp fetch_user(conn, token) do
+    conn = put_private(conn, :discord_token, token)
+
     path = "https://discordapp.com/api/users/@me"
     resp = Ueberauth.Strategy.Discord.OAuth.get(token, path)
 
@@ -179,22 +171,13 @@ defmodule Ueberauth.Strategy.Discord do
   obtained from the Discord callback.
   """
   def extra(conn) do
-    %{
-      discord_token: :token,
-      discord_user: :user,
-      discord_connections: :connections,
-      discord_guilds: :guilds
+    %Extra {
+      raw_info: %{
+        discord_token: conn.private.discord_token,
+        discord_user: conn.private.discord_user,
+        discord_guilds: conn.private.discord_guilds
+      }
     }
-    |> Enum.filter_map(
-      fn {original_key, _} ->
-        Map.has_key?(conn.private, original_key)
-      end,
-      fn {original_key, mapped_key} ->
-        {mapped_key, Map.fetch!(conn.private, original_key)}
-      end
-    )
-    |> Map.new()
-    |> (&%Extra{raw_info: &1}).()
   end
 
   @doc """
@@ -210,6 +193,6 @@ defmodule Ueberauth.Strategy.Discord do
   end
 
   defp option(conn, key) do
-    Dict.get(options(conn), key, Dict.get(default_options(), key))
+    Keyword.get(options(conn), key, Keyword.get(default_options(), key))
   end
 end
