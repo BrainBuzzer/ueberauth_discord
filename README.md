@@ -2,6 +2,8 @@
 
 > Discord OAuth2 strategy for Überauth.
 
+This strategy is improved version of @schwarz's strategy.
+
 For additional documentation on Discord's OAuth implementation see [discord-oauth2-example](https://github.com/hammerandchisel/discord-oauth2-example).
 
 ## Installation
